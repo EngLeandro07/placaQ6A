@@ -1,0 +1,20 @@
+#Agentes CoWork
+CLAUDE.md
+.claude
+
+# Modelos treinados (grandes, específicos de cada execução)
+input-models/*.pt
+
+# Dataset e artefatos de calibração (gerados/locais)
+calibration/dataset/*
+calibration/calib_raw/*
+calibration/input_list.txt
+
+# Saídas do pipeline (.onnx, .dlc, .bin, configs gerados)
+workspace/*
+
+# mantém as pastas no git mesmo com o conteúdo ignorado
+!input-models/.gitkeep
+!calibration/dataset/.gitkeep
+!calibration/calib_raw/.gitkeep
+!workspace/.gitkeep

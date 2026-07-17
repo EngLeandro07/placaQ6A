@@ -1,0 +1,31 @@
+# =============================================================================
+#  requirements-export.txt
+#  Pacotes do venv de EXPORT (.pt -> .onnx). ISOLADO do QAIRT.
+#  Este venv PODE ter numpy>=2 e protobuf novo - nao toca no SDK.
+# =============================================================================
+#
+#  PADRAO: versoes fixadas para reprodutibilidade. Foram escolhidas por serem
+#  estaveis para export ONNX de YOLOv8. ALTERE conforme sua necessidade.
+#
+#  - Se seu modelo foi treinado com uma versao especifica de ultralytics,
+#    fixe a MESMA aqui (ex.: ultralytics==8.2.103) para evitar divergencia
+#    de arquitetura/saidas no export.
+#  - torch CPU e' suficiente para exportar (nao precisa de CUDA so' pra export).
+#    Se quiser export em GPU, troque pela wheel CUDA correspondente.
+# =============================================================================
+
+# Framework de export. ALTERE a versao para casar com a do seu treino.
+ultralytics==8.3.0
+
+# torch CPU - basta para exportar para ONNX.
+# Para GPU: remova e instale a wheel cu* adequada (ex.: torch --index-url ...cu121)
+torch==2.3.1
+torchvision==0.18.1
+
+# Exportador / verificador ONNX. opset 11+ recomendado para QAIRT.
+onnx==1.16.2
+onnxruntime==1.18.1
+onnxslim==0.1.34
+
+# numpy: ultralytics 8.3.0 exige <2.0.0. Usamos a ultima 1.x estavelmente.
+numpy==1.26.4
