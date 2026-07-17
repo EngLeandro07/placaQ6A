@@ -25,13 +25,23 @@ medir latência/FPS. É headless (sem monitor): tudo sai como log no terminal.
 
 ## Levar para a placa
 
-Do host (dentro deste repo):
+**Opção 1 — `board/` montado (recomendado, ver `board_mount.sh` na raiz):**
+```bash
+./board_mount.sh mount        # uma vez por sessão, monta ~/mctech em ./board/
+cp -r board_test model.env board/
+cp workspace/models/modelo_int8.bin board/board_test/
+# ou, se for testar o .dlc em vez do .bin:
+# cp workspace/models/modelo_int8.dlc board/board_test/
+```
+Como `board/` é o mesmo filesystem da placa (via `sshfs`), esses `cp` já
+escrevem direto lá — nada de `scp` repetido, e dá pra editar os scripts em
+`board_test/` no host e ver o efeito na placa na hora.
+
+**Opção 2 — `scp` direto (se não tiver o mount configurado):**
 ```bash
 scp -r board_test radxa@<ip-da-placa>:~/mctech/board_test
 scp model.env radxa@<ip-da-placa>:~/mctech/board_test/
 scp workspace/models/modelo_int8.bin radxa@<ip-da-placa>:~/mctech/board_test/
-# ou, se for testar o .dlc em vez do .bin:
-# scp workspace/models/modelo_int8.dlc radxa@<ip-da-placa>:~/mctech/board_test/
 ```
 
 O `model.env` (raiz do repo) é a fonte única de verdade de valores como

@@ -53,7 +53,8 @@ q6a-conv/
 │   └── *.pt                    # SEUS modelos treinados entram aqui
 ├── workspace/                  # saídas: models/modelo.onnx, .dlc, _int8.dlc, .bin
 ├── board_test/                 # ambiente de teste NA PLACA, em Python (webcam + qnn-net-run)
-└── native_infer/                # ambiente de teste NA PLACA, em C (API QNN direta, sem CLI)
+├── native_infer/                # ambiente de teste NA PLACA, em C (API QNN direta, sem CLI)
+└── board_mount.sh              # monta ~/mctech da placa em ./board/ via sshfs (sem scp manual)
 ```
 
 `input-models/`, `calibration/dataset/` e `workspace/` são montados via `-v` no
@@ -197,8 +198,30 @@ objetivo:
   obter mensagens de erro mais granulares da API. Ver `native_infer/README.md`.
 
 Os dois esperam um `.dlc`/`.bin` copiado de `workspace/models/` e o
-`model.env` da raiz copiados junto via `scp` — cada README tem o comando
-exato.
+`model.env` da raiz copiados junto — cada README tem o comando exato (via
+`scp`, ou via o mount da seção abaixo, que é mais prático).
+
+### Acesso à placa só por SSH? Use `board_mount.sh`
+
+A placa não tem filesystem compartilhado com o host — tudo passa por SSH. Em
+vez de `scp` toda vez que algo muda de um lado ou do outro, `./board_mount.sh
+mount` monta `~/mctech` da placa em `./board/` (via `sshfs`): é o mesmo
+filesystem visto por uma janela de rede, então escrever em `./board/` já
+escreve na placa, e o que a placa escrever lá (capturas, binários
+compilados, logs) aparece em `./board/` na hora — nos dois sentidos, sem
+sincronização periódica.
+
+```bash
+./board_mount.sh mount     # monta (uma vez por sessão)
+cp -r board_test model.env board/          # em vez de scp
+cp workspace/models/modelo_int8.bin board/board_test/
+./board_mount.sh umount    # desmonta quando terminar
+```
+
+Requer `sshfs` (`sudo apt install sshfs`) e login sem senha na placa — veja
+o `Host q6a` em `~/.ssh/config` (chave dedicada `~/.ssh/id_ed25519_q6a`).
+Sem chave, o mount até funciona pra montar, mas cai (erro de I/O) na
+primeira reconexão, porque não tem como digitar senha de novo em background.
 
 ---
 

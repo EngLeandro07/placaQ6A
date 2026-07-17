@@ -20,7 +20,16 @@ nesta primeira versão).
 
 ## Levar para a placa
 
-Do host (dentro deste repo):
+**Opção 1 — `board/` montado (recomendado, ver `board_mount.sh` na raiz):**
+```bash
+./board_mount.sh mount        # uma vez por sessão, monta ~/mctech em ./board/
+cp -r native_infer model.env board/
+cp workspace/models/modelo_int8.bin board/native_infer/
+```
+`board/` é o mesmo filesystem da placa (via `sshfs`) — os `cp` já escrevem
+direto lá, sem `scp` repetido.
+
+**Opção 2 — `scp` direto (se não tiver o mount configurado):**
 ```bash
 scp -r native_infer radxa@<ip-da-placa>:~/mctech/native_infer
 scp model.env radxa@<ip-da-placa>:~/mctech/native_infer/

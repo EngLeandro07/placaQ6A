@@ -30,6 +30,10 @@ native_infer/qnn_infer
 native_infer/*.bin
 native_infer/*.dlc
 
+# Ponto de mount do board_mount.sh (~/mctech da placa via sshfs) - conteúdo
+# vive só na placa, isto aqui é só a "janela" local, nada pra versionar.
+board/
+
 # mantém as pastas no git mesmo com o conteúdo ignorado
 !input-models/.gitkeep
 !calibration/dataset/.gitkeep
