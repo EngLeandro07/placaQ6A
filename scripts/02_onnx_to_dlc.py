@@ -17,19 +17,37 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _shared(key, fallback):
+    """Le' 'key' de model.env (raiz do repo, fonte unica de verdade
+    compartilhada entre container/board_test/native_infer - ver esse
+    arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
+    for p in (Path(__file__).resolve().parent / "model.env",
+              Path("model.env"),
+              Path(__file__).resolve().parent.parent / "model.env"):
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if line.strip().startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return fallback
+
+
 # =============================== CONFIG ======================================
 # ONNX de entrada (saida do passo 01).
 ONNX_IN = "workspace/models/modelo.onnx"
 
-# DLC float de saida.
+# DLC float de saida. ATENCAO: o qairt-converter usa o STEM deste caminho
+# como nome interno do grafo (ver GRAPH_NAME em model.env) - se renomear
+# isto, atualize model.env tambem.
 DLC_OUT = "workspace/models/modelo_fp.dlc"
 
-# Nome e shape do tensor de entrada do seu modelo.
-# Para YOLOv8 exportado NCHW: nome "images", shape 1,3,IMGSZ,IMGSZ.
-# CONFIRA o nome real abrindo o ONNX (ex.: com netron) e ALTERE se diferente.
-# ALTERE o 640 para a resolucao do seu modelo.
-INPUT_NAME = "images"
-INPUT_SHAPE = "1,3,1280,1280"
+# Nome e shape do tensor de entrada do seu modelo. Defaults vem de model.env
+# (INPUT_NAME / IMGSZ) - edite la' pra manter em sincronia com o passo 01.
+# CONFIRA o nome real abrindo o ONNX (ex.: com netron) se seu modelo for
+# diferente de um YOLOv8/11 padrao.
+INPUT_NAME = _shared("INPUT_NAME", "images")
+IMGSZ = int(_shared("IMGSZ", 1280))
+INPUT_SHAPE = f"1,3,{IMGSZ},{IMGSZ}"
 
 # Caminho do qairt-converter. Em geral esta' no PATH apos o envsetup do SDK.
 # Se nao estiver, aponte o caminho absoluto (ex.: $QNN_SDK_ROOT/bin/x86_64-linux-clang/qairt-converter).

@@ -21,6 +21,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _shared(key, fallback):
+    """Le' 'key' de model.env (raiz do repo, fonte unica de verdade
+    compartilhada entre container/board_test/native_infer - ver esse
+    arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
+    for p in (Path(__file__).resolve().parent / "model.env",
+              Path("model.env"),
+              Path(__file__).resolve().parent.parent / "model.env"):
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if line.strip().startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return fallback
+
+
 # =============================== CONFIG ======================================
 # DLC INT8 de entrada (saida do passo 03).
 DLC_IN = "workspace/models/modelo_int8.dlc"
@@ -32,17 +47,26 @@ BIN_OUT = "workspace/models/modelo_int8.bin"
 # Se nao resolver, aponte o caminho absoluto da libQnnHtp.so x86 do SDK.
 HTP_BACKEND = "libQnnHtp.so"
 
-# ---- Config do SoC: ESTES VALORES SAO ESPECIFICOS DA Q6A / QCS6490 ----
-# dsp_arch v68 e soc_id 35 = QCS6490. NAO altere a menos que mude de placa.
-DSP_ARCH = "v68"
-SOC_ID = 35
+# ---- Config do SoC: defaults vem de model.env. SO' muda se trocar de placa,
+# NAO ao trocar de modelo. ----
+DSP_ARCH = _shared("DSP_ARCH", "v68")
+SOC_ID = int(_shared("SOC_ID", 35))
 
-# vtcm_mb: 0 deixa o gerador escolher. Ajuste so' se souber o que faz.
-VTCM_MB = 0
+# vtcm_mb: 0 deixa o gerador escolher. Na Q6A, o .bin gerado (com 0 OU 8)
+# falha igual em runtime ("Request feature vtcm size with value 4194304
+# unsupported") - testado com 1280x1280 E 640x640, mesmo erro nos dois.
+# Ou seja, ESTE campo nao e' a causa do problema (o valor pedido em runtime
+# nao mudou ao alterar vtcm_mb aqui). A causa provavel e' incompatibilidade
+# de firmware/skeleton do DSP na placa com esta versao do QAIRT - nao um
+# ajuste de config do lado do host. Deixado em 8 so' por nao ter piorado nada.
+VTCM_MB = 8
 
-# Nome do grafo. Por padrao deixamos generico; alguns fluxos exigem casar com
-# o nome interno do modelo. Se o gerador reclamar, ajuste.
-GRAPH_NAME = "modelo"
+# Nome do grafo. Default vem de model.env (GRAPH_NAME) - NAO e' livre: o
+# qairt-converter usa o stem do DLC_OUT do passo 02 como nome do grafo (ver
+# comentario em model.env). Se o gerador/native_infer reclamar que o nome
+# nao bate, confira o valor real com native_infer/qnn_infer (lista os grafos
+# do .bin) e atualize model.env.
+GRAPH_NAME = _shared("GRAPH_NAME", "modelo_fp")
 # =============================================================================
 
 HTP_CONFIG_PATH = "workspace/htp_config.json"

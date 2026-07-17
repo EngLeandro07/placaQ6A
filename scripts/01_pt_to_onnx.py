@@ -19,6 +19,21 @@ import shutil
 from pathlib import Path
 from ultralytics import YOLO
 
+
+def _shared(key, fallback):
+    """Le' 'key' de model.env (raiz do repo, fonte unica de verdade
+    compartilhada entre container/board_test/native_infer - ver esse
+    arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
+    for p in (Path(__file__).resolve().parent / "model.env",
+              Path("model.env"),
+              Path(__file__).resolve().parent.parent / "model.env"):
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if line.strip().startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return fallback
+
+
 # =============================== CONFIG ======================================
 # Caminho do modelo treinado (.pt).
 # ALTERE para o seu modelo. Padrao aponta para a pasta input-models/ montada.
@@ -27,9 +42,10 @@ PT_PATH = "input-models/260420_1280_large.pt"
 # Caminho de saida do ONNX.
 ONNX_OUT = "workspace/models/modelo.onnx"
 
-# Resolucao de entrada (lado do quadrado). YOLOv8 costuma usar 640.
-# ALTERE para casar com o treino do seu modelo (ex.: 960 para inspecao fina).
-IMGSZ = 1280
+# Resolucao de entrada (lado do quadrado). Default vem de model.env (IMGSZ) -
+# edite la' pra manter em sincronia com 02_onnx_to_dlc.py/gen_calibration.py/
+# board_test. ALTERE aqui so' se quiser um valor DIFERENTE so' pra este passo.
+IMGSZ = int(_shared("IMGSZ", 1280))
 
 # opset ONNX. 11+ e' compativel com QAIRT; YOLOv8 vai bem em 12-17.
 # Se o qairt-converter reclamar de operador, tente baixar/subir o opset.

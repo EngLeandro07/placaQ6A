@@ -21,6 +21,21 @@ from pathlib import Path
 import numpy as np
 import cv2
 
+
+def _shared(key, fallback):
+    """Le' 'key' de model.env (raiz do repo, fonte unica de verdade
+    compartilhada entre container/board_test/native_infer - ver esse
+    arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
+    for p in (Path(__file__).resolve().parent / "model.env",
+              Path("model.env"),
+              Path(__file__).resolve().parent.parent / "model.env"):
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if line.strip().startswith(key + "="):
+                    return line.split("=", 1)[1].strip()
+    return fallback
+
+
 # =============================== CONFIG ======================================
 # Dataset de ENTRADA (pasta com imagens reais do seu dominio - as fairings).
 # ALTERE para a pasta do seu dataset.
@@ -32,8 +47,9 @@ OUTPUT_DIR = "calibration/calib_raw"
 # Nome do input_list que o qairt-quantizer vai consumir.
 INPUT_LIST = "calibration/input_list.txt"
 
-# Resolucao - DEVE bater com IMGSZ usado no export e na inferencia da placa.
-IMGSZ = 1280
+# Resolucao - DEVE bater com IMGSZ usado no export (passo 01/02) e na
+# inferencia da placa (board_test). Default vem de model.env - edite la'.
+IMGSZ = int(_shared("IMGSZ", 1280))
 
 # Layout do tensor de saida:
 #   "NCHW" -> (1,3,H,W)  padrao para ONNX/QAIRT exportado do PyTorch.

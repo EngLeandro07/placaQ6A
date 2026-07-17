@@ -34,6 +34,7 @@ dois. O `run_pipeline.sh` chama cada passo no Python certo automaticamente.
 
 ```
 q6a-conv/
+├── model.env                   # fonte unica de verdade: IMGSZ/GRAPH_NAME/DSP_ARCH/SOC_ID
 ├── Dockerfile                  # parte da imagem oficial Radxa (QAIRT 2.42)
 ├── requirements-export.txt     # pacotes do venv-export (isolado)
 ├── run_pipeline.sh             # orquestra os passos no Python correto
@@ -50,12 +51,16 @@ q6a-conv/
 │   └── input_list.txt          # (gerado) lista que o quantizer consome
 ├── input-models/
 │   └── *.pt                    # SEUS modelos treinados entram aqui
-└── workspace/                  # saídas: models/modelo.onnx, .dlc, _int8.dlc, .bin
+├── workspace/                  # saídas: models/modelo.onnx, .dlc, _int8.dlc, .bin
+├── board_test/                 # ambiente de teste NA PLACA, em Python (webcam + qnn-net-run)
+└── native_infer/                # ambiente de teste NA PLACA, em C (API QNN direta, sem CLI)
 ```
 
 `input-models/`, `calibration/dataset/` e `workspace/` são montados via `-v` no
 `docker run`, então você edita scripts e troca arquivos no host sem rebuildar a
-imagem.
+imagem. `board_test/` e `native_infer/` **não** são montados no container — são
+ambientes separados que rodam direto na placa (Q6A), levados até lá via `scp`
+(ver seção 6 abaixo e o README de cada um).
 
 ---
 
@@ -177,6 +182,26 @@ para imagens de teste.
 
 ---
 
+## 6. Ambientes de teste mais completos na placa
+
+Além do teste manual acima, o repo tem dois ambientes prontos, separados,
+que rodam **direto na placa** (não no container) — escolha um conforme o
+objetivo:
+
+- **`board_test/`** (Python): captura frames de uma webcam USB conectada à
+  placa e roda o modelo via `qnn-net-run`, headless, simulando produção.
+  Mais rápido de rodar/depurar. Ver `board_test/README.md`.
+- **`native_infer/`** (C): chama a API QNN diretamente (`dlopen` de
+  `libQnnHtp.so`/`libQnnSystem.so`), sem `qnn-net-run` nem Python no caminho
+  da inferência. Útil pra integrar em uma aplicação C/C++ de verdade, ou pra
+  obter mensagens de erro mais granulares da API. Ver `native_infer/README.md`.
+
+Os dois esperam um `.dlc`/`.bin` copiado de `workspace/models/` e o
+`model.env` da raiz copiados junto via `scp` — cada README tem o comando
+exato.
+
+---
+
 ## Pontos de atenção (onde as coisas costumam quebrar)
 
 - **Versão casada (host ↔ placa):** ambos em QAIRT **2.42**. Um `.dlc` roda na
@@ -190,6 +215,13 @@ para imagens de teste.
 - **Nome/shape do input no passo 02:** `INPUT_NAME`/`INPUT_SHAPE` precisam casar
   com o ONNX. Confira o nome real do tensor (ex.: com netron) — para YOLOv8
   costuma ser `images`, shape `1,3,640,640`.
+
+- **`GRAPH_NAME` não é um nome livre:** o `qairt-converter` nomeia o grafo
+  dentro do `.dlc`/`.bin` a partir do *nome do arquivo* de `DLC_OUT` (passo
+  02), não de um valor de config separado. Se renomear `DLC_OUT`, atualize
+  `GRAPH_NAME` em `model.env` também — o `native_infer/qnn_infer` lista os
+  grafos reais do `.bin` se o nome configurado não bater, o que ajuda a
+  descobrir o valor certo.
 
 - **Flags do quantizer:** esta versão usa `--act_quantizer_calibration` /
   `--param_quantizer_calibration`. A flag antiga `--quant_scheme` **não existe
@@ -211,3 +243,13 @@ ao lado explicando o que alterar e quando. Não há `argparse` de propósito: a
 entrada é o bloco `CONFIG`, para o fluxo ficar explícito e reproduzível. Edite o
 bloco conforme sua necessidade (caminhos, resolução, opset, método de
 calibração, bitwidths).
+
+Os valores que precisam ficar **idênticos entre a conversão e os dois
+ambientes de placa** (`IMGSZ`, `INPUT_NAME`, `GRAPH_NAME`, `DSP_ARCH`,
+`SOC_ID`) não são mais duplicados em cada script — todos leem o default de
+`model.env` (raiz do repo), que é a fonte única de verdade. Mude o modelo ou a
+resolução? Edite só o `model.env`. Cada script continua funcionando sozinho
+mesmo sem esse arquivo (cai num valor hardcoded de fallback), mas aí corre o
+risco de divergir do que foi usado pra gerar o modelo — então mantenha o
+`model.env` atualizado e copie-o pra placa de novo depois de qualquer
+mudança (ver seção 6).
