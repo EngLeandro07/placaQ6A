@@ -24,7 +24,8 @@ def _shared(key, fallback):
     arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
     for p in (Path(__file__).resolve().parent / "model.env",
               Path("model.env"),
-              Path(__file__).resolve().parent.parent / "model.env"):
+              Path(__file__).resolve().parent.parent / "model.env",
+              Path(__file__).resolve().parent.parent.parent / "model.env"):
         if p.exists():
             for line in p.read_text().splitlines():
                 if line.strip().startswith(key + "="):
@@ -33,13 +34,17 @@ def _shared(key, fallback):
 
 
 # =============================== CONFIG ======================================
-# ONNX de entrada (saida do passo 01).
-ONNX_IN = "workspace/models/modelo.onnx"
+# ONNX de entrada (saida do passo 01). ATUALIZE junto com PT_PATH do passo 01
+# ao trocar de modelo - precisa apontar pro .onnx daquele modelo.
+ONNX_IN = "output-models/260420_1280_large.onnx"
 
-# DLC float de saida. ATENCAO: o qairt-converter usa o STEM deste caminho
-# como nome interno do grafo (ver GRAPH_NAME em model.env) - se renomear
-# isto, atualize model.env tambem.
-DLC_OUT = "workspace/models/modelo_fp.dlc"
+# DLC float de saida. Nome derivado automaticamente do stem de ONNX_IN, com
+# sufixo "_fp" pra diferenciar do INT8 (mesma extensao .dlc, gerado no passo
+# 03). ATENCAO: o qairt-converter usa o STEM deste caminho como nome interno
+# do grafo (ver GRAPH_NAME em model.env) - se ONNX_IN mudar de modelo,
+# atualize GRAPH_NAME em model.env tambem (o novo grafo vai se chamar
+# "<stem-do-onnx>_fp").
+DLC_OUT = f"output-models/{Path(ONNX_IN).stem}_fp.dlc"
 
 # Nome e shape do tensor de entrada do seu modelo. Defaults vem de model.env
 # (INPUT_NAME / IMGSZ) - edite la' pra manter em sincronia com o passo 01.

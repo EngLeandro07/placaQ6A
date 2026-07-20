@@ -29,9 +29,10 @@ medir latência/FPS. É headless (sem monitor): tudo sai como log no terminal.
 ```bash
 ./board_mount.sh mount        # uma vez por sessão, monta ~/mctech em ./board/
 cp -r board_test model.env board/
-cp workspace/models/modelo_int8.bin board/board_test/
+mkdir -p board/models   # ~/mctech/models/ - COMPARTILHADO com native_infer/, não fica dentro de board_test/
+cp conversion/output-models/modelo_int8.bin board/models/
 # ou, se for testar o .dlc em vez do .bin:
-# cp workspace/models/modelo_int8.dlc board/board_test/
+# cp conversion/output-models/modelo_int8.dlc board/models/
 ```
 Como `board/` é o mesmo filesystem da placa (via `sshfs`), esses `cp` já
 escrevem direto lá — nada de `scp` repetido, e dá pra editar os scripts em
@@ -41,7 +42,8 @@ escrevem direto lá — nada de `scp` repetido, e dá pra editar os scripts em
 ```bash
 scp -r board_test radxa@<ip-da-placa>:~/mctech/board_test
 scp model.env radxa@<ip-da-placa>:~/mctech/board_test/
-scp workspace/models/modelo_int8.bin radxa@<ip-da-placa>:~/mctech/board_test/
+ssh radxa@<ip-da-placa> mkdir -p ~/mctech/models
+scp conversion/output-models/modelo_int8.bin radxa@<ip-da-placa>:~/mctech/models/
 ```
 
 O `model.env` (raiz do repo) é a fonte única de verdade de valores como
@@ -71,10 +73,14 @@ Cada script tem um bloco `CONFIG` no topo (mesmo padrão dos scripts do
 pipeline principal, sem `argparse`):
 
 - `01_capture_frames.py`: `CAM_INDEX`, `NUM_FRAMES`, `IMGSZ` (default lido de
-  `model.env`) e o pré-processamento (deve ser **idêntico** ao usado em
-  `calibration/gen_calibration.py` — resolução, RGB, NCHW, `/255`).
+  `model.env`), layout NCHW/RGB, uint8 bruto (0-255) — **não** é o mesmo
+  formato de `conversion/calibration/gen_calibration.py` (que gera float32
+  normalizado, correto só pra calibrar o `.dlc` float no passo 03; o grafo
+  INT8 já implantado espera pixel bruto, ver comentário no CONFIG do script).
 - `02_run_inference.py`: `MODEL_MODE` (`"bin"` ou `"dlc"`), caminhos do
-  modelo, e o `BACKEND` (`$QNN_SDK_ROOT`/`$VARIANT`, resolvidos do `env.sh`).
+  modelo em `../models/` (`DLC_PATH`/`BIN_PATH` — diretório **compartilhado**
+  com `native_infer/`, ver seção acima), `OUTPUT_DTYPE` (uint8 por padrão) e
+  o `BACKEND` (`$QNN_SDK_ROOT`/`$VARIANT`, resolvidos do `env.sh`).
 
 ## Lendo o resultado
 
@@ -86,3 +92,66 @@ O `02_run_inference.py` imprime, ao final:
 Se quiser inspecionar as detecções de verdade, os `.raw` de saída ficam em
 `outputs/Result_N/` — decodifique com o mesmo código de pós-processamento do
 seu YOLOv8 (grid/anchors, sigmoid, NMS), fora do escopo deste teste rápido.
+
+## Experimentos comparativos entre modelos (`monitor.sh` + `plot_results.py`)
+
+Pra comparar FPS/CPU/RAM/temperatura entre os modelos (médio/nano/large), em
+vez de rodar `run_test.sh` modelo por modelo manualmente:
+
+### 1. Na placa: `monitor.sh`
+
+Roda inferência repetida (`ITERATIONS` vezes) sobre um lote de frames
+capturado 1x (isola o custo da NPU do custo de captura de webcam), e grava
+FPS + CPU% + RAM + temperatura (CPU e NPU/DSP) + estado do CDSP a cada
+iteração num CSV.
+
+```bash
+source ../qairt_runtime/env.sh
+cd ~/mctech/board_test
+# edite MODEL_NAME/BIN_PATH no topo do monitor.sh pro modelo que vai testar
+./monitor.sh
+```
+
+Repita trocando `MODEL_NAME`/`BIN_PATH` pra cada modelo (`modelo_260409m-2`,
+`260417_1280_nano`, `260420_1280_large`) — cada rodada gera um
+`experiments/<MODEL_NAME>.csv` separado. **Lembre de ajustar `IMGSZ` em
+`model.env`** antes de cada modelo (960 pro médio, 1280 pros outros dois) —
+o `monitor.sh` recaptura o lote de frames a cada execução, então usa o
+`IMGSZ` que estiver configurado no momento.
+
+**Não existe um "% de uso da NPU" exposto por esta placa** (só a GPU tem
+`devfreq` com load — o CDSP só tem um contador de tempo em baixo-consumo em
+`debugfs`, com unidade não confirmada, não usado pra não inventar número
+enganoso). Como proxy de atividade da NPU, o script usa a temperatura da
+zona térmica `nspss` (NSP SubSystem = o próprio bloco Hexagon/HTP) e o
+estado do remoteproc `cdsp` (detecta crash/recuperação, como o bug de
+DMA/VTCM já visto antes, se acontecer de novo).
+
+**Só cobre este ambiente (`board_test`), não o `native_infer/`**: o
+`qnn_infer` atual recarrega backend/device/contexto do zero a cada frame
+(processo novo por chamada), então um benchmark feito assim mediria
+overhead de reload repetido, não o desempenho real da API nativa num uso
+contínuo — precisaria antes estender `native_infer` pra aceitar múltiplos
+frames num só processo (contexto carregado 1x, executado em loop) pra uma
+comparação justa. Ver `native_infer/README.md`.
+
+### 2. No host: `plot_results.py`
+
+Copie os CSVs da placa pra `board_test/experiments/` (via `board_mount`/`scp`)
+e rode:
+
+```bash
+cd board_test
+python3 plot_results.py
+```
+
+Gera em `experiments/plots/`: um gráfico de linha por métrica (FPS, CPU%,
+RAM, temp CPU, temp NPU) comparando os 3 modelos por iteração, mais um
+resumo de médias. Roda numa **pyenv virtualenv própria** (não a `venv/` da
+placa) — se não existir na sua máquina:
+```bash
+pyenv virtualenv 3.10.20 placaq6a-plots   # ou outra versão 3.10.x/3.11.x ja instalada
+cd board_test
+pyenv local placaq6a-plots
+pip install matplotlib
+```

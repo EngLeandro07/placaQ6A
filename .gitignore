@@ -5,37 +5,42 @@ CLAUDE.md
 __pycache__/
 *.pyc
 
-# Modelos treinados (grandes, específicos de cada execução)
-input-models/*.pt
+# Ambiente de conversão (container Docker): modelos treinados, calibração
+# gerada e saídas do pipeline - tudo em conversion/, nada disso é código.
+conversion/input-models/*.pt
+conversion/calibration/dataset/*
+conversion/calibration/calib_raw/*
+conversion/calibration/input_list.txt
+conversion/output-models/*
+conversion/workspace/*
 
-# Dataset e artefatos de calibração (gerados/locais)
-calibration/dataset/*
-calibration/calib_raw/*
-calibration/input_list.txt
-
-# Saídas do pipeline (.onnx, .dlc, .bin, configs gerados)
-workspace/*
-
-# Teste de webcam na placa: capturas, saídas do qnn-net-run e o modelo
-# copiado (scp) pra dentro de board_test/ pra rodar lá - tudo gerado/local.
+# Teste de webcam na placa: capturas, saídas do qnn-net-run - tudo gerado/local.
 board_test/captures/
 board_test/outputs/
 board_test/input_list.txt
-board_test/*.dlc
-board_test/*.bin
 board_test/venv/
 
-# Inferência nativa em C: binário compilado (na placa) e o .bin copiado pra lá
+# Experimentos de monitoramento (board_test/monitor.sh + plot_results.py):
+# CSVs puxados da placa e gráficos gerados - dados, não código.
+# .python-version é local à máquina (nome da pyenv virtualenv não existe em
+# outro clone do repo - ver board_test/README.md pra recriar).
+board_test/experiments/
+board_test/.python-version
+
+# Inferência nativa em C: binário compilado na placa
 native_infer/qnn_infer
-native_infer/*.bin
-native_infer/*.dlc
+
+# Os .dlc/.bin usados por board_test/ E native_infer/ ficam em ~/mctech/models/
+# na placa - irmão dos dois (não dentro de nenhum), fora do repo (como
+# qairt_runtime/) já que é puramente artefato de deploy, nunca código.
 
 # Ponto de mount do board_mount.sh (~/mctech da placa via sshfs) - conteúdo
 # vive só na placa, isto aqui é só a "janela" local, nada pra versionar.
 board/
 
 # mantém as pastas no git mesmo com o conteúdo ignorado
-!input-models/.gitkeep
-!calibration/dataset/.gitkeep
-!calibration/calib_raw/.gitkeep
-!workspace/.gitkeep
+!conversion/input-models/.gitkeep
+!conversion/calibration/dataset/.gitkeep
+!conversion/calibration/calib_raw/.gitkeep
+!conversion/output-models/.gitkeep
+!conversion/workspace/.gitkeep

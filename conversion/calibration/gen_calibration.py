@@ -28,7 +28,8 @@ def _shared(key, fallback):
     arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
     for p in (Path(__file__).resolve().parent / "model.env",
               Path("model.env"),
-              Path(__file__).resolve().parent.parent / "model.env"):
+              Path(__file__).resolve().parent.parent / "model.env",
+              Path(__file__).resolve().parent.parent.parent / "model.env"):
         if p.exists():
             for line in p.read_text().splitlines():
                 if line.strip().startswith(key + "="):

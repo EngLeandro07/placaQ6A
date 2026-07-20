@@ -2,7 +2,7 @@
 # =============================================================================
 #  board_mount.sh - monta/desmonta ~/mctech da placa Q6A como pasta LOCAL via
 #  sshfs. Da' acesso direto (leitura E escrita) aos artefatos que ja estao la'
-#  (board_test/, native_infer/, testePlaca/) sem scp manual - e' o MESMO
+#  (board_test/, native_infer/, qairt_runtime/) sem scp manual - e' o MESMO
 #  filesystem, so' visto por uma janela de rede: uma mudanca de qualquer lado
 #  (voce editando aqui, ou um processo rodando na placa) aparece no outro na
 #  hora, sem sincronizacao periodica.

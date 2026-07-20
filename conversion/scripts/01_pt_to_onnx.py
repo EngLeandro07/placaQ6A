@@ -26,7 +26,8 @@ def _shared(key, fallback):
     arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
     for p in (Path(__file__).resolve().parent / "model.env",
               Path("model.env"),
-              Path(__file__).resolve().parent.parent / "model.env"):
+              Path(__file__).resolve().parent.parent / "model.env",
+              Path(__file__).resolve().parent.parent.parent / "model.env"):
         if p.exists():
             for line in p.read_text().splitlines():
                 if line.strip().startswith(key + "="):
@@ -39,8 +40,10 @@ def _shared(key, fallback):
 # ALTERE para o seu modelo. Padrao aponta para a pasta input-models/ montada.
 PT_PATH = "input-models/260420_1280_large.pt"
 
-# Caminho de saida do ONNX.
-ONNX_OUT = "workspace/models/modelo.onnx"
+# Caminho de saida do ONNX. Nome derivado automaticamente do stem de PT_PATH
+# (ex.: "modelo_260409m-2.pt" -> "modelo_260409m-2.onnx"), pra diferenciar as
+# saidas de modelos diferentes dentro de output-models/.
+ONNX_OUT = f"output-models/{Path(PT_PATH).stem}.onnx"
 
 # Resolucao de entrada (lado do quadrado). Default vem de model.env (IMGSZ) -
 # edite la' pra manter em sincronia com 02_onnx_to_dlc.py/gen_calibration.py/

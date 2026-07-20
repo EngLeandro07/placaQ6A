@@ -119,6 +119,7 @@ static void *readFile(const char *path, long *outSize) {
  * rank/dimensions/memType/clientBuf) - os dois tem os mesmos primeiros
  * campos com o mesmo layout, entao os macros abaixo dao conta dos dois. */
 #define TENSOR_GET_NAME(t)      (((t).version == QNN_TENSOR_VERSION_1) ? (t).v1.name : (t).v2.name)
+#define TENSOR_GET_ID(t)        (((t).version == QNN_TENSOR_VERSION_1) ? (t).v1.id : (t).v2.id)
 #define TENSOR_GET_DATATYPE(t)  (((t).version == QNN_TENSOR_VERSION_1) ? (t).v1.dataType : (t).v2.dataType)
 #define TENSOR_GET_RANK(t)      (((t).version == QNN_TENSOR_VERSION_1) ? (t).v1.rank : (t).v2.rank)
 #define TENSOR_GET_DIMS(t)      (((t).version == QNN_TENSOR_VERSION_1) ? (t).v1.dimensions : (t).v2.dimensions)
@@ -153,7 +154,10 @@ static Qnn_Tensor_t buildExecTensor(const Qnn_Tensor_t *desc, uint8_t **rawDataO
   }
   memset(raw, 0, numBytes);
 
-  t.v1.id = 0;
+  /* o ID precisa bater com o que o grafo espera (graphExecute rejeita com
+   * "Expected Tensor ID: N not found in user-provided tensors" se nao
+   * bater) - NAO e' um valor livre, tem que vir do proprio desc. */
+  t.v1.id = TENSOR_GET_ID(*desc);
   t.v1.name = TENSOR_GET_NAME(*desc);
   t.v1.type = QNN_TENSOR_TYPE_APP_READWRITE;
   t.v1.dataFormat = QNN_TENSOR_DATA_FORMAT_FLAT_BUFFER;
@@ -261,10 +265,15 @@ int main(int argc, char **argv) {
   }
   printf("[infer] %s tem %u grafo(s)\n", binPath, numGraphs);
 
-  /* acha o grafo pelo nome e copia a descricao dos tensores de I/O (a
-   * memoria do system-context sera liberada depois, entao copiamos os
-   * Qnn_Tensor_t - dimensions/name apontam pra dentro do binBuffer, que
-   * continua vivo, entao esses ponteiros continuam validos). */
+  /* acha o grafo pelo nome. NAO copiamos os Qnn_Tensor_t - so' guardamos
+   * ponteiros (inputDescs/outputDescs) pra dentro da memoria alocada pelo
+   * proprio system-context (nao pra dentro de binBuffer). Por isso
+   * systemContextFree() SO' PODE rodar depois do ultimo uso desses
+   * ponteiros (via buildExecTensor + graphExecute mais abaixo) - liberar
+   * antes e' use-after-free (foi exatamente o bug encontrado em produção:
+   * sempre passava batido antes porque contextCreateFromBinary falhava
+   * primeiro por causa do VTCM, entao este trecho nunca tinha sido
+   * exercitado de verdade). */
   QnnSystemContext_GraphInfo_t *targetGraph = NULL;
   for (uint32_t i = 0; i < numGraphs; i++) {
     const char *name = (graphs[i].version == QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_1)
@@ -308,9 +317,6 @@ int main(int argc, char **argv) {
 
   Qnn_GraphHandle_t graphHandle = NULL;
   checkQnn(qnn->graphRetrieve(context, graphName, &graphHandle), "graphRetrieve");
-
-  qnnSystem->systemContextFree(sysCtx);
-  sysCtx = NULL;
 
   printf("[infer] contexto carregado na HTP, grafo '%s' recuperado.\n", graphName);
 
@@ -382,6 +388,13 @@ int main(int argc, char **argv) {
     printf("[infer] saida[%u] '%s': %zu elementos  min=%.4f  max=%.4f  mean=%.4f\n", i,
            TENSOR_GET_NAME(outputs[i]), numElements, minV, maxV, sum / (double)numElements);
   }
+
+  /* So' agora - depois do ultimo uso de inputs[]/outputs[] (que carregam
+   * name/dimensions apontando pra dentro da memoria do system-context) -
+   * e' seguro liberar o system-context. Ver comentario mais acima (perto de
+   * onde inputDescs/outputDescs sao obtidos). */
+  qnnSystem->systemContextFree(sysCtx);
+  sysCtx = NULL;
 
   /* ---- 8. cleanup ---------------------------------------------------------*/
   qnn->contextFree(context, NULL);

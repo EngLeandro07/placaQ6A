@@ -72,7 +72,7 @@ case "${1:-all}" in
     step_convert
     step_quant
     step_context
-    echo "=== PIPELINE COMPLETO. Saidas em workspace/. ==="
+    echo "=== PIPELINE COMPLETO. Saidas em output-models/. ==="
     ;;
   *)
     echo "uso: $0 [all|export|calib|convert|quant|context]"

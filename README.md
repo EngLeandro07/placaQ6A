@@ -33,35 +33,39 @@ dois. O `run_pipeline.sh` chama cada passo no Python certo automaticamente.
 ## Estrutura
 
 ```
-q6a-conv/
+placaQ6A/
 ├── model.env                   # fonte unica de verdade: IMGSZ/GRAPH_NAME/DSP_ARCH/SOC_ID
-├── Dockerfile                  # parte da imagem oficial Radxa (QAIRT 2.42)
-├── requirements-export.txt     # pacotes do venv-export (isolado)
-├── run_pipeline.sh             # orquestra os passos no Python correto
 ├── README.md
-├── scripts/
-│   ├── 01_pt_to_onnx.py        # (venv-export)  .pt  -> .onnx
-│   ├── 02_onnx_to_dlc.py       # (QAIRT)        .onnx -> .dlc float
-│   ├── 03_quantize_dlc.py      # (QAIRT)        .dlc  -> .dlc INT8
-│   └── 04_dlc_to_context.py    # (QAIRT)        .dlc INT8 -> .bin (opcional)
-├── calibration/
-│   ├── gen_calibration.py      # (venv-export)  dataset -> dataset de calibração
-│   ├── dataset/                # SUAS imagens de calibração entram aqui
-│   ├── calib_raw/              # (gerado) arquivos .raw
-│   └── input_list.txt          # (gerado) lista que o quantizer consome
-├── input-models/
-│   └── *.pt                    # SEUS modelos treinados entram aqui
-├── workspace/                  # saídas: models/modelo.onnx, .dlc, _int8.dlc, .bin
+├── conversion/                 # TUDO do ambiente Docker/conversão, separado dos apps de borda
+│   ├── Dockerfile              # parte da imagem oficial Radxa (QAIRT 2.42)
+│   ├── requirements-export.txt # pacotes do venv-export (isolado)
+│   ├── run_pipeline.sh         # orquestra os passos no Python correto
+│   ├── scripts/
+│   │   ├── 01_pt_to_onnx.py        # (venv-export)  .pt  -> .onnx
+│   │   ├── 02_onnx_to_dlc.py       # (QAIRT)        .onnx -> .dlc float
+│   │   ├── 03_quantize_dlc.py      # (QAIRT)        .dlc  -> .dlc INT8
+│   │   └── 04_dlc_to_context.py    # (QAIRT)        .dlc INT8 -> .bin (opcional)
+│   ├── calibration/
+│   │   ├── gen_calibration.py      # (venv-export)  dataset -> dataset de calibração
+│   │   ├── dataset/                # SUAS imagens de calibração entram aqui
+│   │   ├── calib_raw/              # (gerado) arquivos .raw
+│   │   └── input_list.txt          # (gerado) lista que o quantizer consome
+│   ├── input-models/
+│   │   └── *.pt                    # SEUS modelos treinados entram aqui
+│   ├── output-models/              # saídas: <nome>.onnx, <nome>_fp.dlc, <nome>_int8.dlc, <nome>.bin (nome = stem do .pt, espelha input-models/)
+│   └── workspace/                  # só estado interno do pipeline: htp_config.json, htp_backend_ext.json
 ├── board_test/                 # ambiente de teste NA PLACA, em Python (webcam + qnn-net-run)
 ├── native_infer/                # ambiente de teste NA PLACA, em C (API QNN direta, sem CLI)
 └── board_mount.sh              # monta ~/mctech da placa em ./board/ via sshfs (sem scp manual)
 ```
 
-`input-models/`, `calibration/dataset/` e `workspace/` são montados via `-v` no
-`docker run`, então você edita scripts e troca arquivos no host sem rebuildar a
-imagem. `board_test/` e `native_infer/` **não** são montados no container — são
-ambientes separados que rodam direto na placa (Q6A), levados até lá via `scp`
-(ver seção 6 abaixo e o README de cada um).
+`conversion/input-models/`, `conversion/output-models/`, `conversion/calibration/dataset/`
+e `conversion/workspace/` são montados via `-v` no `docker run`, então você edita scripts e troca
+arquivos no host sem rebuildar a imagem. `board_test/` e `native_infer/`
+**não** são montados no container — são ambientes separados que rodam
+direto na placa (Q6A), levados até lá via `scp` (ver seção 6 abaixo e o
+README de cada um). `model.env` fica na raiz do repo (fora de `conversion/`)
+porque é lido pelos quatro ambientes, não só pela conversão.
 
 ---
 
@@ -72,7 +76,7 @@ ambientes separados que rodam direto na placa (Q6A), levados até lá via `scp`
 > tag, ajuste a primeira linha do `Dockerfile`.
 
 ```bash
-cd q6a-conv
+cd conversion
 sudo docker build -t q6a-conv:2.42 .
 ```
 
@@ -83,15 +87,26 @@ por cima.
 
 ## 2. Rodar o container
 
+Rode a partir de `conversion/` (mesmo diretório do build):
+
 ```bash
 sudo docker run --rm -it \
   -v "$(pwd)/input-models":/workspace/input-models \
+  -v "$(pwd)/output-models":/workspace/output-models \
   -v "$(pwd)/scripts":/workspace/scripts \
   -v "$(pwd)/calibration":/workspace/calibration \
   -v "$(pwd)/workspace":/workspace/workspace \
   -v "$(pwd)/run_pipeline.sh":/workspace/run_pipeline.sh \
+  -v "$(pwd)/../model.env":/workspace/model.env \
   --name q6a-conv q6a-conv:2.42 /bin/bash
 ```
+
+O mount do `model.env` (que fica um nível acima, na raiz do repo) não é
+opcional: dentro do container cada pasta é montada isolada em `/workspace/*`
+(sem uma camada `conversion/` lá dentro), então os scripts só encontram o
+`model.env` se ele também estiver montado ali — do mesmo jeito que o
+`run_pipeline.sh`. Sem esse mount, os scripts caem silenciosamente nos
+valores hardcoded de fallback em vez dos de `model.env`.
 
 Não precisa de `--privileged` nem `-v /dev:/dev` aqui: isto é **só conversão**, não
 toca em hardware. O `--privileged` só seria necessário para inferência, que é na
@@ -116,6 +131,8 @@ export QAIRT_ENVSETUP=/caminho/correto/qairt/2.42.0.251225/bin/envsetup.sh
 
 ## 3. Preparar os arquivos de entrada
 
+Ainda dentro de `conversion/`:
+
 1. Coloque o modelo treinado em `input-models/` (ou edite `PT_PATH` no
    `scripts/01_pt_to_onnx.py` para apontar para o arquivo certo).
 2. Coloque as imagens de calibração em `calibration/dataset/` (imagens reais do
@@ -136,31 +153,40 @@ chmod +x run_pipeline.sh
 Ou passo a passo (útil para depurar):
 
 ```bash
-./run_pipeline.sh export     # .pt  -> workspace/models/modelo.onnx
+./run_pipeline.sh export     # .pt  -> output-models/<nome>.onnx
 ./run_pipeline.sh calib      # dataset -> calibration/calib_raw + input_list.txt
-./run_pipeline.sh convert    # .onnx -> workspace/models/modelo_fp.dlc
-./run_pipeline.sh quant      # -> workspace/models/modelo_int8.dlc
-./run_pipeline.sh context    # -> workspace/models/modelo_int8.bin (opcional)
+./run_pipeline.sh convert    # .onnx -> output-models/<nome>_fp.dlc
+./run_pipeline.sh quant      # -> output-models/<nome>_int8.dlc
+./run_pipeline.sh context    # -> output-models/<nome>.bin (opcional)
 ```
 
-Resultado final em `workspace/`:
-- `modelo_int8.dlc` — roda na placa via `qnn-net-run --dlc_path`.
-- `modelo_int8.bin` — context-binary otimizado, roda via `--retrieve_context`.
+`<nome>` é o stem do `.pt` de entrada (`PT_PATH` em `scripts/01_pt_to_onnx.py`) —
+cada passo deriva o nome de saída automaticamente a partir do seu próprio
+arquivo de entrada, só acrescentando `_fp`/`_int8` para diferenciar os dois
+`.dlc` (mesma extensão); `.onnx`/`.bin` não precisam de sufixo porque a
+extensão já é única em `output-models/`. Ao trocar de modelo (`PT_PATH`),
+atualize também `ONNX_IN`/`DLC_IN` nos passos seguintes e `GRAPH_NAME` em
+`model.env` (ver comentário no próprio arquivo).
+
+Resultado final em `output-models/`:
+- `<nome>_int8.dlc` — roda na placa via `qnn-net-run --dlc_path`.
+- `<nome>.bin` — context-binary otimizado, roda via `--retrieve_context`.
 
 ---
 
 ## 5. Levar para a placa e testar
 
-Copie o artefato para a Q6A (ajuste IP/usuário):
+Copie o artefato para a Q6A (rode da raiz do repo, não de dentro de
+`conversion/`; ajuste IP/usuário):
 
 ```bash
-scp workspace/models/modelo_int8.dlc radxa@192.168.1.6:~/mctech/testePlaca/
+scp conversion/output-models/modelo_int8.dlc radxa@192.168.1.6:~/mctech/qairt_runtime/
 ```
 
 Na placa (com o `env.sh` do runtime QAIRT já carregado):
 
 ```bash
-source ~/mctech/testePlaca/env.sh
+source ~/mctech/qairt_runtime/env.sh
 
 # usando o .dlc direto:
 qnn-net-run \
@@ -197,9 +223,12 @@ objetivo:
   da inferência. Útil pra integrar em uma aplicação C/C++ de verdade, ou pra
   obter mensagens de erro mais granulares da API. Ver `native_infer/README.md`.
 
-Os dois esperam um `.dlc`/`.bin` copiado de `workspace/models/` e o
-`model.env` da raiz copiados junto — cada README tem o comando exato (via
-`scp`, ou via o mount da seção abaixo, que é mais prático).
+Os dois esperam um `.dlc`/`.bin` copiado de `conversion/output-models/` pra
+dentro de `~/mctech/models/` na placa — diretório **compartilhado** entre os
+dois ambientes (irmão de `board_test/`/`native_infer/`, não dentro de
+nenhum dos dois, já que ambos rodam os MESMOS artefatos) — e o `model.env`
+da raiz copiado junto. Cada README tem o comando exato (via `scp`, ou via o
+mount da seção abaixo, que é mais prático).
 
 ### Acesso à placa só por SSH? Use `board_mount.sh`
 
@@ -214,7 +243,8 @@ sincronização periódica.
 ```bash
 ./board_mount.sh mount     # monta (uma vez por sessão)
 cp -r board_test model.env board/          # em vez de scp
-cp workspace/models/modelo_int8.bin board/board_test/
+mkdir -p board/models      # ~/mctech/models/ - compartilhado com native_infer/
+cp conversion/output-models/modelo_int8.bin board/models/
 ./board_mount.sh umount    # desmonta quando terminar
 ```
 
@@ -222,6 +252,19 @@ Requer `sshfs` (`sudo apt install sshfs`) e login sem senha na placa — veja
 o `Host q6a` em `~/.ssh/config` (chave dedicada `~/.ssh/id_ed25519_q6a`).
 Sem chave, o mount até funciona pra montar, mas cai (erro de I/O) na
 primeira reconexão, porque não tem como digitar senha de novo em background.
+
+---
+
+## 7. Experimentos comparativos (FPS/CPU/RAM/temperatura)
+
+`board_test/monitor.sh` + `board_test/plot_results.py` comparam os 3
+modelos (médio/nano/large) em FPS, CPU%, RAM e temperatura (CPU e NPU/DSP,
+via proxy — não existe "% de uso da NPU" exposto nesta placa). Cobrem só o
+ambiente `board_test/` por enquanto: `native_infer/` recarrega o modelo do
+zero a cada frame hoje, então não dá uma medida de FPS comparável (ver
+`native_infer/README.md`, seção "Sobre benchmark comparativo"). Ver
+`board_test/README.md`, seção "Experimentos comparativos", para o
+passo a passo completo.
 
 ---
 

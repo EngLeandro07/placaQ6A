@@ -28,8 +28,12 @@ import numpy as np
 # "dlc" (--dlc_path). O .bin carrega mais rapido (ja pre-compilado pro SoC).
 MODEL_MODE = "bin"
 
-DLC_PATH = "modelo_int8.dlc"
-BIN_PATH = "modelo_int8.bin"
+# Caminho relativo a ~/mctech/models/ - diretorio COMPARTILHADO entre
+# board_test/ e native_infer/ (irmao dos dois, mesmo espirito de
+# qairt_runtime/ e model.env), ja que os dois ambientes usam os MESMOS
+# artefatos .dlc/.bin - nao faz sentido duplicar copias em cada um.
+DLC_PATH = "../models/modelo_260409m-2_int8.dlc"
+BIN_PATH = "../models/modelo_260409m-2.bin"
 
 # input_list.txt gerado pelo passo 01.
 INPUT_LIST = "input_list.txt"
@@ -42,6 +46,12 @@ OUTPUT_DIR = "outputs"
 BACKEND = "$QNN_SDK_ROOT/lib/$VARIANT/libQnnHtp.so"
 
 GEN = "qnn-net-run"
+
+# Dtype da saida do grafo. Descoberto via native_infer (2026-07-20): os
+# grafos INT8 desta placa tem entrada E saida em uint8 bruto, nao float32
+# (a normalizacao/desnormalizacao fica embutida na quantizacao). Ajuste se
+# testar um modelo com I/O em outro dtype.
+OUTPUT_DTYPE = np.uint8
 # =============================================================================
 
 
@@ -73,7 +83,7 @@ def main():
     if not Path(model_path).exists():
         raise FileNotFoundError(
             f"modelo nao encontrado: {model_path}\n"
-            f"copie o artefato (scp) pra dentro de board_test/ antes de rodar."
+            f"copie o artefato (scp) pra dentro de ~/mctech/models/ antes de rodar."
         )
 
     backend = resolve_backend()
@@ -127,9 +137,9 @@ def summarize_outputs(out_dir: Path, n_frames: int):
             print(f"  [{label}] {rdir.name}: nenhum .raw de saida encontrado")
             continue
         for rf in raw_files:
-            arr = np.fromfile(str(rf), dtype=np.float32)
+            arr = np.fromfile(str(rf), dtype=OUTPUT_DTYPE)
             print(f"  [{label}] {rdir.name}/{rf.name}: "
-                  f"{arr.size} floats  min={arr.min():.4f}  "
+                  f"{arr.size} elementos ({OUTPUT_DTYPE.__name__})  min={arr.min():.4f}  "
                   f"max={arr.max():.4f}  mean={arr.mean():.4f}")
 
     print("[infer] se os numeros acima parecem plausiveis (nao sao tudo "

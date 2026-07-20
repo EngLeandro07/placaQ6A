@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # =============================================================================
 #  01_capture_frames.py
-#  Captura frames da webcam DA PLACA e grava no mesmo formato .raw usado na
-#  calibracao (ver calibration/gen_calibration.py) - resolucao, RGB, NCHW,
-#  normalizacao /255. Isso garante que o teste na placa usa exatamente o
-#  mesmo pre-processamento que foi usado para calibrar o modelo.
+#  Captura frames da webcam DA PLACA e grava em .raw no formato que o grafo
+#  INT8 ja quantizado espera: NCHW, RGB, uint8 bruto (0-255), SEM
+#  normalizacao. NAO e' o mesmo formato de calibration/gen_calibration.py
+#  (que gera float32 normalizado - correto para calibrar o .dlc FLOAT no
+#  passo 03, um estagio anterior e diferente deste). Ver comentario no
+#  bloco CONFIG abaixo.
 #
 #  ONDE RODA: na PLACA, com Python3 do sistema (precisa de opencv-python e
 #  numpy instalados na placa - nao faz parte do venv-export do container).
@@ -56,13 +58,15 @@ INPUT_LIST = "input_list.txt"
 # um model.env atualizado pra dentro de board_test/ ao fazer o deploy).
 IMGSZ = int(_shared("IMGSZ", 1280))
 
-# Mesmo pre-processamento de calibration/gen_calibration.py: NCHW, RGB, /255,
-# sem mean/std. Se o modelo usar outra normalizacao, ajuste aqui E LA para
-# ficar identico (senao a saida da NPU nao bate com o que o modelo espera).
+# Layout NCHW/RGB, igual a calibration/gen_calibration.py (que gera float32
+# normalizado - CORRETO pra calibrar o .dlc FLOAT, passo 03). Mas o grafo
+# INT8 JA IMPLANTADO na placa espera pixel bruto uint8 (0-255), SEM
+# normalizacao - a normalizacao fica embutida na propria quantizacao do
+# grafo. Descoberto via native_infer (2026-07-20): o tensor de entrada
+# rejeitava float32 (tamanho 4x maior que o esperado) e so' aceitou uint8.
+# Ou seja: NAO aplique SCALE/MEAN/STD aqui - isso e' so' pra calibracao,
+# nao pra rodar o modelo ja quantizado na NPU.
 LAYOUT = "NCHW"
-SCALE = 1.0 / 255.0
-MEAN = [0.0, 0.0, 0.0]
-STD = [1.0, 1.0, 1.0]
 TO_RGB = True
 # =============================================================================
 
@@ -73,9 +77,7 @@ def preprocess(frame_bgr: np.ndarray) -> np.ndarray:
     if TO_RGB:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    x = img.astype(np.float32)
-    x = (x - np.array(MEAN, dtype=np.float32)) * SCALE
-    x = x / np.array(STD, dtype=np.float32)
+    x = img.astype(np.uint8)
 
     if LAYOUT == "NCHW":
         x = np.transpose(x, (2, 0, 1))
@@ -85,7 +87,7 @@ def preprocess(frame_bgr: np.ndarray) -> np.ndarray:
     else:
         raise ValueError(f"LAYOUT invalido: {LAYOUT}")
 
-    return np.ascontiguousarray(x, dtype=np.float32)
+    return np.ascontiguousarray(x, dtype=np.uint8)
 
 
 def main():

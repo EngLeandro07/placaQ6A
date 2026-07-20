@@ -28,7 +28,8 @@ def _shared(key, fallback):
     arquivo). Se nao encontrar o arquivo/chave, usa 'fallback'."""
     for p in (Path(__file__).resolve().parent / "model.env",
               Path("model.env"),
-              Path(__file__).resolve().parent.parent / "model.env"):
+              Path(__file__).resolve().parent.parent / "model.env",
+              Path(__file__).resolve().parent.parent.parent / "model.env"):
         if p.exists():
             for line in p.read_text().splitlines():
                 if line.strip().startswith(key + "="):
@@ -37,11 +38,17 @@ def _shared(key, fallback):
 
 
 # =============================== CONFIG ======================================
-# DLC INT8 de entrada (saida do passo 03).
-DLC_IN = "workspace/models/modelo_int8.dlc"
+# DLC INT8 de entrada (saida do passo 03). ATUALIZE junto com DLC_OUT do
+# passo 03 ao trocar de modelo.
+DLC_IN = "output-models/260420_1280_large_int8.dlc"
 
-# Context-binary de saida (.bin) que vai para a placa.
-BIN_OUT = "workspace/models/modelo_int8.bin"
+_dlc_in_stem = Path(DLC_IN).stem
+_base_name = _dlc_in_stem[:-5] if _dlc_in_stem.endswith("_int8") else _dlc_in_stem
+
+# Context-binary de saida (.bin) que vai para a placa. Nome derivado do stem
+# de DLC_IN (removendo o sufixo "_int8") - sem sufixo adicional, ja que e' o
+# unico .bin gerado (a extensao ja diferencia de .dlc/.onnx).
+BIN_OUT = f"output-models/{_base_name}.bin"
 
 # Backend HTP do host (lib x86 do SDK). Em geral no PATH/lib do SDK.
 # Se nao resolver, aponte o caminho absoluto da libQnnHtp.so x86 do SDK.
@@ -52,21 +59,30 @@ HTP_BACKEND = "libQnnHtp.so"
 DSP_ARCH = _shared("DSP_ARCH", "v68")
 SOC_ID = int(_shared("SOC_ID", 35))
 
-# vtcm_mb: 0 deixa o gerador escolher. Na Q6A, o .bin gerado (com 0 OU 8)
-# falha igual em runtime ("Request feature vtcm size with value 4194304
-# unsupported") - testado com 1280x1280 E 640x640, mesmo erro nos dois.
-# Ou seja, ESTE campo nao e' a causa do problema (o valor pedido em runtime
-# nao mudou ao alterar vtcm_mb aqui). A causa provavel e' incompatibilidade
-# de firmware/skeleton do DSP na placa com esta versao do QAIRT - nao um
-# ajuste de config do lado do host. Deixado em 8 so' por nao ter piorado nada.
-VTCM_MB = 8
+# vtcm_mb: quanto de VTCM (memoria on-chip rapida, dedicada ao HTP) reservar
+# pro grafo. Mais VTCM = menos spill pra DDR = mais rapido, mas exige mais
+# memoria DMA reservada no device tree da placa pra alocar via FastRPC.
+#
+# BUG CONHECIDO nesta placa (imagem Radxa R2, ver memoria do projeto / topico
+# no forum): o device tree tem uma reserva de DMA pro FastRPC/CDSP bem menor
+# que o esperado (faltam nos `memory-region` nos `compute-cb@N`). Testado
+# empiricamente no board (2026-07-20): vtcm_mb <= 2 FUNCIONA (roda de verdade
+# na NPU), vtcm_mb >= 3 FALHA com "Request feature vtcm size with value ...
+# unsupported" / err 0x138d. Ou seja, 2 e' o teto que esta placa aceita hoje -
+# nao e' um limite do modelo nem do QAIRT, e' especifico deste bug de imagem.
+# Se a Radxa corrigir o device tree numa imagem futura, provavelmente da' pra
+# subir esse valor de novo (4 ou 8) e ganhar performance (menos spill pra
+# DDR) - vale re-testar depois de qualquer atualizacao de imagem/firmware.
+VTCM_MB = 2
 
 # Nome do grafo. Default vem de model.env (GRAPH_NAME) - NAO e' livre: o
 # qairt-converter usa o stem do DLC_OUT do passo 02 como nome do grafo (ver
-# comentario em model.env). Se o gerador/native_infer reclamar que o nome
-# nao bate, confira o valor real com native_infer/qnn_infer (lista os grafos
-# do .bin) e atualize model.env.
-GRAPH_NAME = _shared("GRAPH_NAME", "modelo_fp")
+# comentario em model.env), e a quantizacao (passo 03) preserva esse nome no
+# INT8. O fallback abaixo (usado so' se a chave faltar em model.env) assume
+# o padrao "<base>_fp" derivado do proprio DLC_IN. Se o gerador/native_infer
+# reclamar que o nome nao bate, confira o valor real com native_infer/qnn_infer
+# (lista os grafos do .bin) e atualize model.env.
+GRAPH_NAME = _shared("GRAPH_NAME", f"{_base_name}_fp")
 # =============================================================================
 
 HTP_CONFIG_PATH = "workspace/htp_config.json"
@@ -131,9 +147,9 @@ def main():
 
     print(f"[ctx] OK -> {out}")
     print("[ctx] leve este .bin para a placa e rode com:")
-    print("      qnn-net-run --backend libQnnHtp.so "
-          "--retrieve_context modelo_int8.bin --input_list <lista> "
-          "--output_dir out")
+    print(f"      qnn-net-run --backend libQnnHtp.so "
+          f"--retrieve_context {out.name} --input_list <lista> "
+          f"--output_dir out")
 
 
 if __name__ == "__main__":

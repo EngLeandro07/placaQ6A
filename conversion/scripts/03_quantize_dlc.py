@@ -21,11 +21,16 @@ import sys
 from pathlib import Path
 
 # =============================== CONFIG ======================================
-# DLC float de entrada (saida do passo 02).
-DLC_IN = "workspace/models/modelo_fp.dlc"
+# DLC float de entrada (saida do passo 02). ATUALIZE junto com DLC_OUT do
+# passo 02 ao trocar de modelo.
+DLC_IN = "output-models/260420_1280_large_fp.dlc"
 
 # DLC quantizado de saida (este e' o que vai para a placa / context-binary).
-DLC_OUT = "workspace/models/modelo_int8.dlc"
+# Nome derivado do stem de DLC_IN (removendo o sufixo "_fp", se presente) com
+# sufixo "_int8" pra diferenciar do float (mesma extensao .dlc).
+_dlc_in_stem = Path(DLC_IN).stem
+_base_name = _dlc_in_stem[:-3] if _dlc_in_stem.endswith("_fp") else _dlc_in_stem
+DLC_OUT = f"output-models/{_base_name}_int8.dlc"
 
 # input_list.txt do dataset de calibracao (saida de gen_calibration.py).
 INPUT_LIST = "calibration/input_list.txt"
