@@ -7,6 +7,16 @@ na NPU via `qnn-net-run`. Sem NMS/decode de detecções — o objetivo é só
 confirmar que o modelo carrega e roda na HTP com entrada de câmera real, e
 medir latência/FPS. É headless (sem monitor): tudo sai como log no terminal.
 
+Dois modos de uso, conforme o objetivo:
+- **`run_test.sh`** (`01_capture_frames.py` + `02_run_inference.py`): smoke
+  test em lote — captura N frames, depois roda `qnn-net-run` uma vez sobre
+  todos eles. Rápido de rodar/depurar, bom pra confirmar que o modelo
+  carrega e roda.
+- **`03_live_loop.py`**: laço **contínuo** de captura+inferência (câmera liga
+  uma vez, inferência roda em loop, como em produção de verdade), com
+  visualização ao vivo no navegador via `streamer/` e um CSV frame-a-frame —
+  ver seção própria abaixo.
+
 ## Pré-requisitos na placa
 
 - Runtime QAIRT **2.42** já instalado (mesma versão usada para gerar o
@@ -93,31 +103,74 @@ Se quiser inspecionar as detecções de verdade, os `.raw` de saída ficam em
 `outputs/Result_N/` — decodifique com o mesmo código de pós-processamento do
 seu YOLOv8 (grid/anchors, sigmoid, NMS), fora do escopo deste teste rápido.
 
-## Experimentos comparativos entre modelos (`monitor.sh` + `plot_results.py`)
+## `03_live_loop.py` — captura+inferência contínua, com streamer ao vivo
 
-Pra comparar FPS/CPU/RAM/temperatura entre os modelos (médio/nano/large), em
-vez de rodar `run_test.sh` modelo por modelo manualmente:
+Laço **contínuo** (não em lote): captura 1 frame → envia pro `streamer/`
+(visualização ao vivo) → preprocessa → roda 1 inferência via
+`native_infer/qnn_infer --loop` (subprocess persistente, modelo carregado
+uma única vez, não a cada frame) → grava 1 linha no CSV → repete, até
+Ctrl+C. Simula uso de produção de verdade (câmera liga uma vez, inferência
+roda em loop) — `run_test.sh` roda em lote (captura tudo, só depois infere
+tudo).
 
-### 1. Na placa: `monitor.sh`
-
-Roda inferência repetida (`ITERATIONS` vezes) sobre um lote de frames
-capturado 1x (isola o custo da NPU do custo de captura de webcam), e grava
-FPS + CPU% + RAM + temperatura (CPU e NPU/DSP) + estado do CDSP a cada
-iteração num CSV.
+**Pré-requisitos, além dos já listados acima:**
+- `native_infer/qnn_infer` compilado na placa (`cd native_infer && make` —
+  ver `native_infer/README.md`).
+- `streamer/streamer.py` rodando (em outro terminal/sessão SSH) se você
+  quiser visualização ao vivo — é opcional (best-effort): sem ele,
+  `03_live_loop.py` roda normalmente, só não há imagem no navegador. Ver
+  `streamer/README.md`.
 
 ```bash
 source ../qairt_runtime/env.sh
 cd ~/mctech/board_test
-# edite MODEL_NAME/BIN_PATH no topo do monitor.sh pro modelo que vai testar
-./monitor.sh
+python3 ../streamer/streamer.py &   # opcional, em background (ou noutro terminal) - ver streamer/README.md
+python3 03_live_loop.py             # Ctrl+C encerra de forma limpa
+```
+
+No navegador do host: `http://<ip-da-placa>:8080/`. O CSV frame-a-frame
+sai em `experiments/live_<MODEL_NAME>.csv` (colunas: timestamp, índice do
+frame, FPS instantâneo, tempos de cada etapa em ms, status da inferência,
+min/max/mean da saída) — acompanhe CPU/RAM/temperatura/FPS ao vivo com
+`./monitor.sh` (ver seção abaixo) rodando num terceiro terminal.
+
+Edite `MODEL_NAME`/`BIN_PATH`/`GRAPH_NAME` no bloco `CONFIG` do topo do
+script ao trocar de modelo (mesmo padrão dos outros scripts deste
+diretório).
+
+## Ferramentas de observação (`benchmark_batch.sh`, `monitor.sh`, `plot_results.py`)
+
+Dois usos distintos, não confunda:
+
+- **`benchmark_batch.sh`**: gera **dados** — roda inferência repetida em
+  lote e grava um CSV por modelo, pra comparar modelos entre si depois
+  (`plot_results.py`).
+- **`monitor.sh`**: **não gera nada** — é um visualizador ao vivo (tipo
+  `top`) de CPU/RAM/temperatura/FPS, pra rodar num terminal separado
+  enquanto `03_live_loop.py` roda em outro.
+
+### 1. Na placa: `benchmark_batch.sh` — benchmark em lote entre modelos
+
+Roda inferência repetida (`ITERATIONS` vezes) sobre um lote de frames
+capturado 1x (isola o custo da NPU do custo de captura de webcam), e grava
+FPS + CPU% + RAM + temperatura (CPU e NPU/DSP) + estado do CDSP a cada
+iteração num CSV. **Extraído do antigo `monitor.sh`** — mesma lógica, sem
+mudança de comportamento (`monitor.sh` agora é só o visualizador ao vivo
+abaixo).
+
+```bash
+source ../qairt_runtime/env.sh
+cd ~/mctech/board_test
+# edite MODEL_NAME/BIN_PATH no topo do benchmark_batch.sh pro modelo que vai testar
+./benchmark_batch.sh
 ```
 
 Repita trocando `MODEL_NAME`/`BIN_PATH` pra cada modelo (`modelo_260409m-2`,
 `260417_1280_nano`, `260420_1280_large`) — cada rodada gera um
 `experiments/<MODEL_NAME>.csv` separado. **Lembre de ajustar `IMGSZ` em
 `model.env`** antes de cada modelo (960 pro médio, 1280 pros outros dois) —
-o `monitor.sh` recaptura o lote de frames a cada execução, então usa o
-`IMGSZ` que estiver configurado no momento.
+o `benchmark_batch.sh` recaptura o lote de frames a cada execução, então
+usa o `IMGSZ` que estiver configurado no momento.
 
 **Não existe um "% de uso da NPU" exposto por esta placa** (só a GPU tem
 `devfreq` com load — o CDSP só tem um contador de tempo em baixo-consumo em
@@ -127,13 +180,26 @@ zona térmica `nspss` (NSP SubSystem = o próprio bloco Hexagon/HTP) e o
 estado do remoteproc `cdsp` (detecta crash/recuperação, como o bug de
 DMA/VTCM já visto antes, se acontecer de novo).
 
-**Só cobre este ambiente (`board_test`), não o `native_infer/`**: o
-`qnn_infer` atual recarrega backend/device/contexto do zero a cada frame
-(processo novo por chamada), então um benchmark feito assim mediria
-overhead de reload repetido, não o desempenho real da API nativa num uso
-contínuo — precisaria antes estender `native_infer` pra aceitar múltiplos
-frames num só processo (contexto carregado 1x, executado em loop) pra uma
-comparação justa. Ver `native_infer/README.md`.
+**Só cobre este ambiente (`board_test` via `qnn-net-run`), não o
+`native_infer/`**: esse formato de "N iterações sobre o mesmo lote" não faz
+sentido pro `native_infer/qnn_infer --loop` (que já existe, ver
+`native_infer/README.md`), desenhado pra uso contínuo real (frame a frame,
+ao vivo) — pra medir desempenho do `native_infer`, use `03_live_loop.py`
+(que já usa `qnn_infer --loop`) em vez de `benchmark_batch.sh`.
+
+### 1b. Na placa, em paralelo: `monitor.sh` — visualização ao vivo
+
+```bash
+cd ~/mctech/board_test
+./monitor.sh                                          # observa experiments/live.csv
+./monitor.sh experiments/live_modelo_260409m-2.csv     # CSV específico de 03_live_loop.py
+```
+
+Mostra CPU%, RAM, temperatura (CPU e NPU/DSP, mesmo proxy `nspss` acima) e
+estado do CDSP, amostrados localmente a cada segundo, mais o FPS lido da
+última linha do CSV que `03_live_loop.py` estiver escrevendo — não precisa
+do runtime QAIRT carregado (só lê `/proc` e `/sys`), e não grava nenhum
+arquivo. Ctrl+C encerra e restaura o cursor do terminal.
 
 ### 2. No host: `plot_results.py`
 

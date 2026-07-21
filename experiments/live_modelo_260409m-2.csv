@@ -1,0 +1,1 @@
+timestamp,frame_idx,fps_inst,t_total_ms,t_capture_ms,t_preprocess_ms,t_streamer_ms,t_infer_roundtrip_ms,t_infer_exec_ms,infer_status,out_min,out_max,out_mean

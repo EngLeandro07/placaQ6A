@@ -66,32 +66,84 @@ binário via `-DDEFAULT_GRAPH_NAME`. Sem `model.env`, cai no fallback
 
 ## Rodar (na placa, com o runtime QAIRT sourced)
 
+Dois modos, mesmo binário:
+
 ```bash
 source ~/mctech/qairt_runtime/env.sh   # deixa libQnnHtp.so/libQnnSystem.so no LD_LIBRARY_PATH
+
+# modo single-shot (original): 1 frame por invocação, processo sobe e morre
 ./qnn_infer ../models/modelo_int8.bin frame.raw
 # ou, pra sobrescrever o nome do grafo default (compilado a partir de model.env):
 # ./qnn_infer ../models/modelo_int8.bin frame.raw outro_nome_de_grafo
+
+# modo loop (novo, ver seção abaixo): carrega o modelo 1x, executa N frames
+./qnn_infer --loop ../models/modelo_int8.bin
 ```
 
 - `../models/modelo_int8.bin`: context-binary gerado pelo passo 04 (`conversion/output-models/modelo_int8.bin`
   no repo do host, copiado via `scp`/`cp` pra dentro de `~/mctech/models/` — diretório
   **compartilhado** com `board_test/`, um nível acima de `native_infer/`, não dentro dele.
-- `frame.raw`: um frame já pré-processado, em **uint8 bruto (0-255)**, NCHW,
-  RGB, **sem normalização** (`board_test/captures/*.raw` já gera nesse
-  formato desde 2026-07-20). O grafo INT8 espera pixel bruto - a
-  normalização fica embutida na própria quantização do grafo. Descoberto
-  testando este programa: o tensor de entrada rejeitava um `.raw` float32
-  normalizado por ter 4x o tamanho esperado.
-- nome do grafo (3º argumento, opcional): **não é livre** — o
-  `qairt-converter` usa o *stem* do `DLC_OUT` do passo 02 como nome interno
-  do grafo, **sanitizado como identificador C** (hífen vira `_`, e se
-  começar com dígito ganha um `_` na frente - ex.: `260417_1280_nano_fp` no
-  `DLC_OUT` vira o grafo `_260417_1280_nano_fp` dentro do `.bin`). Ver
-  comentário em `model.env`, chave `GRAPH_NAME`. Se você não tiver certeza
-  do valor certo, rode sem o 3º argumento: o programa lista os grafos
-  encontrados no `.bin` e usa o default compilado; se não bater, ele avisa e
-  você roda de novo passando o nome certo (já sanitizado, como aparece na
-  listagem).
+- `frame.raw` (só no modo single-shot): um frame já pré-processado, em
+  **uint8 bruto (0-255)**, NCHW, RGB, **sem normalização**
+  (`board_test/captures/*.raw` já gera nesse formato desde 2026-07-20). O
+  grafo INT8 espera pixel bruto - a normalização fica embutida na própria
+  quantização do grafo. Descoberto testando este programa: o tensor de
+  entrada rejeitava um `.raw` float32 normalizado por ter 4x o tamanho
+  esperado.
+- nome do grafo (último argumento, opcional nos dois modos): **não é
+  livre** — o `qairt-converter` usa o *stem* do `DLC_OUT` do passo 02 como
+  nome interno do grafo, **sanitizado como identificador C** (hífen vira
+  `_`, e se começar com dígito ganha um `_` na frente - ex.:
+  `260417_1280_nano_fp` no `DLC_OUT` vira o grafo `_260417_1280_nano_fp`
+  dentro do `.bin`). Ver comentário em `model.env`, chave `GRAPH_NAME`. Se
+  você não tiver certeza do valor certo, rode sem esse argumento: o
+  programa lista os grafos encontrados no `.bin` (em stderr) e usa o
+  default compilado; se não bater, ele avisa e você roda de novo passando o
+  nome certo (já sanitizado, como aparece na listagem).
+
+### Modo loop (`--loop`)
+
+Pensado pra ser chamado como **subprocess persistente** por um
+orquestrador externo — hoje isso é `board_test/03_live_loop.py`, que sobe
+`qnn_infer --loop` uma vez no início e manda um frame por vez enquanto a
+webcam captura continuamente. Faz todo o setup (dlopen, backend, device,
+`contextCreateFromBinary`, `graphRetrieve`) **uma única vez**, depois fica
+lendo frames do stdin em loop, um `graphExecute` por frame, até o stdin
+fechar (EOF) — é isso que faltava pra medir desempenho real de uso
+contínuo (câmera liga uma vez, inferência roda em loop); antes disso, um
+benchmark de FPS contra este binário media sobretudo o overhead de reload
+repetido (ver "Sobre benchmark comparativo" abaixo).
+
+```bash
+./qnn_infer --loop <modelo.bin> [nome_do_grafo]
+```
+
+Protocolo no **stdin** (por frame, síncrono — um round-trip por frame, sem
+pipelining):
+```
+4 bytes little-endian (uint32) = N, tamanho do frame em bytes
+N bytes do frame (mesmo layout NCHW/uint8 do modo single-shot)
+```
+
+Resposta no **stdout** (por frame), uma linha de texto ASCII:
+```
+OK <exec_us> <min> <max> <mean>\n   # sucesso - stats do 1º tensor de saída
+ERR tamanho_invalido\n              # frame não bate com o tensor de entrada
+```
+`ERR` **não é fatal** — o processo continua vivo e aguarda o próximo frame
+(o custo de recarregar o `.bin` é caro demais pra matar o processo inteiro
+por causa de 1 frame ruim). EOF limpo no stdin (nenhum byte do próximo
+header) é desligamento normal, com `exit(0)` depois do teardown; EOF no
+**meio** de um header ou payload é tratado como stream corrompido — aí sim
+é fatal, porque não dá mais pra confiar no alinhamento do framing.
+
+No modo loop, **todo diagnóstico** (setup, stats completas de todas as
+saídas por frame) vai para **stderr** — stdout fica reservado
+exclusivamente pro protocolo `OK`/`ERR` linha-a-linha acima, pra um
+orquestrador como `03_live_loop.py` poder consumir com um simples
+`readline()`. No modo single-shot isso não muda (stdout continua sendo o
+resultado que um humano rodando manualmente quer ver na tela) — só o ruído
+de setup migrou pra stderr nos dois modos.
 
 ## O que o programa faz
 
@@ -131,27 +183,25 @@ exercitar esse código pela primeira vez:
 
 ## Sobre benchmark comparativo (FPS/CPU/RAM/temperatura)
 
-`board_test/monitor.sh` faz esse tipo de experimento, mas **só cobre
-`board_test/`** por enquanto — não `native_infer/`. Motivo: o `qnn_infer`
-atual recarrega backend/device/contexto do zero a cada frame (processo novo
-por chamada, ver "Limitações" abaixo), então um benchmark de FPS feito
-assim mediria principalmente o overhead de reload repetido, não o
-desempenho real da API nativa num uso contínuo de produção (câmera liga
-uma vez, modelo carrega uma vez, inferência roda em loop). Rodar esse teste
-foi tentado (2026-07-20) e descartado por não ser uma comparação válida.
+**Resolvido**: `qnn_infer` ganhou o modo `--loop` (ver seção acima), que
+carrega o modelo uma única vez e executa múltiplos frames em sequência —
+exatamente o que faltava pra medir desempenho real de uso contínuo (câmera
+liga uma vez, inferência roda em loop), em vez do overhead de reload
+repetido que um benchmark contra o modo single-shot mediria. A forma válida
+de medir FPS/CPU/RAM/temperatura do `native_infer` em produção hoje é rodar
+`board_test/03_live_loop.py`, que sobe `qnn_infer --loop` como subprocess
+persistente e alimenta frame a frame da webcam, gravando um CSV
+(`experiments/live_<nome>.csv`) — acompanhe ao vivo com `board_test/monitor.sh`
+em outro terminal.
 
-Pra um benchmark justo, `native_infer` precisaria primeiro aceitar múltiplos
-frames num único processo (contexto carregado 1x, `graphExecute` chamado em
-loop) — ver "Limitações" abaixo.
+`board_test/benchmark_batch.sh` (antigo `monitor.sh`) continua cobrindo só
+o fluxo via `qnn-net-run` (`board_test/`, N iterações sobre um lote fixo) —
+esse formato específico de "N iterações sobre o mesmo lote" não faz sentido
+pro `native_infer`, já que o modo `--loop` foi desenhado pra uso contínuo
+real (frame a frame, ao vivo), não pra repetir o mesmo lote em memória.
 
 ## Limitações desta primeira versão
 
-- **1 frame por invocação, recarregando tudo do zero**: `qnn_infer` faz
-  `backendCreate`/`deviceCreate`/`contextCreateFromBinary` a cada chamada e
-  libera tudo no fim — não há modo "carrega uma vez, executa em loop"
-  ainda. Bom pra confirmar que a API funciona; ruim pra medir FPS de
-  produção (o custo de reload domina o tempo medido) ou pra uso contínuo
-  real (câmera → inferência em loop).
 - Assume 1 único tensor de entrada (`inputs[0]`) — suficiente pro YOLO deste
   projeto (imagem única, NCHW).
 - Não decodifica as detecções do YOLO (NMS/grid/anchors) — só confirma que a

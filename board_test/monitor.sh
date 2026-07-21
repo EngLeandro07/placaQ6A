@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  monitor.sh - roda inferencia repetida sobre um lote FIXO de frames
-#  (capturado 1x, reaproveitado em todas as iteracoes - isola o custo da NPU
-#  do custo de captura de webcam) e registra, a cada iteracao: FPS, uso de
-#  CPU, RAM, temperatura (CPU e NPU/DSP) e estado do CDSP - tudo num CSV, pra
-#  comparar modelo por modelo (ver plot_results.py).
+#  monitor.sh - visualizador AO VIVO (tipo `top`) de CPU%, RAM, temperatura
+#  (CPU e NPU/DSP) e FPS, pra rodar num terminal separado enquanto
+#  03_live_loop.py (captura+inferencia continua) roda em outro.
 #
-#  So' pro ambiente board_test/ (via qnn-net-run). NAO existe equivalente
-#  valido ainda pro native_infer/: o qnn_infer atual recarrega backend/
-#  device/contexto do zero A CADA FRAME (processo novo por chamada), entao
-#  benchmarks feitos assim medem overhead de reload repetido, nao o
-#  desempenho real da API nativa num uso continuo (camera liga uma vez,
-#  modelo carrega uma vez, inferencia roda em loop) - precisaria antes
-#  estender native_infer/qnn_infer pra aceitar multiplos frames num so'
-#  processo (mantendo o contexto carregado entre eles) pra uma comparacao
-#  justa. Ver native_infer/README.md.
+#  Este script NAO roda inferencia nem grava nenhum CSV proprio - so' LE e
+#  EXIBE. Antes disso (ate esta mudanca), monitor.sh fazia as duas coisas
+#  (rodava qnn-net-run em loop sobre um lote fixo E gravava o CSV de
+#  comparacao entre modelos) - essa capacidade foi extraida pra
+#  benchmark_batch.sh, sem alteracao de comportamento (ver esse script).
+#
+#  CPU/RAM/temperatura/estado do CDSP sao amostrados AQUI, localmente, a
+#  cada ciclo de refresh (mesmas funcoes de sempre). O FPS vem de fora: quem
+#  gera essa metrica frame-a-frame agora e' 03_live_loop.py, que grava em
+#  experiments/live_<nome>.csv - este script so' le' a ULTIMA LINHA desse
+#  CSV (tail -n1) a cada ciclo, nunca escreve nele.
 #
 #  NAO EXISTE um "% de uso da NPU" exposto por esta placa (o unico devfreq
 #  com load e' o da GPU; o CDSP so' tem um contador de tempo em baixo-consumo
@@ -24,39 +24,22 @@
 #  estado do remoteproc "cdsp" (running/crashed - detecta o crash de
 #  DMA/VTCM que ja vimos antes, se acontecer de novo).
 #
-#  ONDE RODA: na PLACA, dentro de board_test/, com o runtime QAIRT ja
-#  carregado (source env.sh).
+#  ONDE RODA: na PLACA, dentro de board_test/. NAO precisa do runtime QAIRT
+#  carregado (nao chama qnn-net-run nem nada da NPU - so' le' /proc e /sys).
 #
 #  USO:
-#     source ../qairt_runtime/env.sh
 #     cd ~/mctech/board_test
-#     ./monitor.sh
-#  (edite o bloco CONFIG abaixo pro modelo que quer testar - MODEL_NAME vira
-#  o nome do arquivo CSV, entao troque a cada modelo diferente)
+#     ./monitor.sh                        # observa experiments/live.csv
+#     ./monitor.sh experiments/live_modelo_260409m-2.csv   # CSV especifico
+#  (Ctrl+C encerra e restaura o cursor do terminal)
 # =============================================================================
 set -u
 
 # =============================== CONFIG ======================================
-MODEL_NAME="modelo_260409m-2"                    # so' um rotulo p/ nome do CSV
-BIN_PATH="../models/modelo_260409m-2.bin"        # .bin a testar (dir compartilhado)
-ITERATIONS=30                                     # quantas rodadas de inferencia
-OUTDIR="experiments"                              # onde os CSVs vao parar
+LIVE_CSV="${1:-experiments/live.csv}"   # CSV que 03_live_loop.py esta escrevendo
+REFRESH_INTERVAL=1                       # segundos entre cada atualizacao
+STALE_THRESHOLD_S=5                      # acima disso, avisa "parado ha Xs"
 # =============================================================================
-
-if [ -z "${QNN_SDK_ROOT:-}" ] || [ -z "${VARIANT:-}" ]; then
-  echo "[erro] source ../qairt_runtime/env.sh antes de rodar" >&2
-  exit 1
-fi
-BACKEND="$QNN_SDK_ROOT/lib/$VARIANT/libQnnHtp.so"
-
-mkdir -p "$OUTDIR"
-CSV="$OUTDIR/${MODEL_NAME}.csv"
-
-if [ -x venv/bin/python ]; then PY="venv/bin/python"; else PY="python3"; fi
-
-echo "[monitor] capturando lote de frames (1x, reusado em todas as $ITERATIONS iteracoes)..."
-"$PY" 01_capture_frames.py
-N_FRAMES=$(wc -l < input_list.txt)
 
 read_cpu_stat() {
   awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8}' /proc/stat
@@ -102,41 +85,84 @@ read_cdsp_state() {
   echo "desconhecido"
 }
 
-echo "timestamp,iteracao,fps,ms_por_frame,cpu_pct,ram_usado_mb,temp_cpu_c,temp_npu_c,cdsp_state" > "$CSV"
+# Le' a ultima linha de $LIVE_CSV e atualiza FPS_STATUS_LINE (variavel
+# global, nao subshell - precisa ser chamada direto, nao dentro de $(...)).
+# Colunas do CSV escrito por 03_live_loop.py, nesta ordem (contrato fixo):
+#   1=timestamp 2=frame_idx 3=fps_inst 4=t_total_ms ... 13=out_mean
+LAST_GOOD_FPS="--"
+FPS_STATUS_LINE="-- (aguardando 03_live_loop.py)"
 
-for i in $(seq 1 "$ITERATIONS"); do
-  TMPOUT="/tmp/monitor_out_$$"
-  TMPLOG="/tmp/monitor_log_$$.txt"
-  stat0=$(read_cpu_stat)
-  t0=$(date +%s.%N)
-  qnn-net-run --backend "$BACKEND" --retrieve_context "$BIN_PATH" \
-    --input_list input_list.txt --output_dir "$TMPOUT" > "$TMPLOG" 2>&1
-  ret=$?
-  t1=$(date +%s.%N)
-  stat1=$(read_cpu_stat)
-  rm -rf "$TMPOUT"
-
-  if [ $ret -ne 0 ]; then
-    echo "[monitor] iteracao $i FALHOU (qnn-net-run retornou $ret):"
-    cat "$TMPLOG" >&2
-    rm -f "$TMPLOG"
-    continue
+update_fps_status() {
+  if [ ! -f "$LIVE_CSV" ]; then
+    FPS_STATUS_LINE="-- (aguardando 03_live_loop.py escrever em $LIVE_CSV)"
+    return
   fi
-  rm -f "$TMPLOG"
+  local last_line nf ts
+  last_line=$(tail -n 1 "$LIVE_CSV" 2>/dev/null)
+  nf=$(awk -F, '{print NF}' <<< "$last_line")
+  ts=$(awk -F, '{print $1}' <<< "$last_line")
+  # NF==13 sozinho NAO basta pra distinguir uma linha de dados do proprio
+  # header (que TAMBEM tem 13 campos, so' que com texto) - valida que o 1o
+  # campo (timestamp) e' numerico. Cobre header-only, arquivo vazio, e
+  # linha malformada/em escrita parcial - mantem o ultimo valor bom
+  # conhecido em vez de mostrar lixo (ja foi bug real: sem essa checagem,
+  # um CSV so' com header exibia o literal "fps_inst" como se fosse o FPS).
+  if [ "$nf" != "13" ] || ! [[ "$ts" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    FPS_STATUS_LINE="${LAST_GOOD_FPS} (aguardando 1a linha valida em $LIVE_CSV)"
+    return
+  fi
+  local fps now age
+  fps=$(awk -F, '{print $3}' <<< "$last_line")
+  now=$(date +%s)
+  age=$(awk -v now="$now" -v ts="$ts" 'BEGIN{d=now-ts; if(d<0)d=0; printf "%d", d}')
+  LAST_GOOD_FPS="$fps"
+  if [ "$age" -gt "$STALE_THRESHOLD_S" ]; then
+    FPS_STATUS_LINE="${fps} FPS  (parado ha ${age}s - 03_live_loop.py ainda rodando?)"
+  else
+    FPS_STATUS_LINE="${fps} FPS"
+  fi
+}
 
-  dt=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.4f", b-a}')
-  fps=$(awk -v dt="$dt" -v n="$N_FRAMES" 'BEGIN{printf "%.2f", n/dt}')
-  ms=$(awk -v dt="$dt" -v n="$N_FRAMES" 'BEGIN{printf "%.2f", (dt/n)*1000}')
+render() {
+  tput cup 0 0
+  tput ed
+  echo "=== board_test/monitor.sh - visualizacao ao vivo (Ctrl+C para sair) ==="
+  echo
+  printf "  CPU uso:        %s%%\n" "$cpu"
+  printf "  RAM usada:      %s MB\n" "$ram"
+  printf "  Temp. CPU:      %s C\n" "$tcpu"
+  printf "  Temp. NPU/DSP:  %s C  (proxy: zona termica nspss)\n" "$tnpu"
+  printf "  CDSP estado:    %s\n" "$cdsp"
+  echo
+  printf "  FPS (03_live_loop.py):  %s\n" "$FPS_STATUS_LINE"
+  echo
+  printf "  CSV monitorado: %s\n" "$LIVE_CSV"
+  printf "  atualizando a cada %ss\n" "$REFRESH_INTERVAL"
+}
 
-  cpu=$(cpu_pct_from_snapshots "$stat0" "$stat1")
+cleanup() {
+  tput cnorm  # garante que o cursor volta a aparecer, mesmo em Ctrl+C
+  echo
+  exit 0
+}
+trap cleanup INT TERM
+
+tput civis  # esconde o cursor (redesenho tipo `top`, sem piscar)
+tput clear
+
+stat_prev=$(read_cpu_stat)
+while true; do
+  sleep "$REFRESH_INTERVAL"
+
+  stat_cur=$(read_cpu_stat)
+  cpu=$(cpu_pct_from_snapshots "$stat_prev" "$stat_cur")
+  stat_prev="$stat_cur"
+
   ram=$(read_ram_used_mb)
   tcpu=$(read_temp_max cpu)
   tnpu=$(read_temp_max nspss)
   cdsp=$(read_cdsp_state)
-  ts=$(date +%s)
+  update_fps_status
 
-  echo "$ts,$i,$fps,$ms,$cpu,$ram,$tcpu,$tnpu,$cdsp" >> "$CSV"
-  echo "[monitor] $i/$ITERATIONS: ${fps} FPS  cpu=${cpu}%  ram=${ram}MB  temp_cpu=${tcpu}C  temp_npu=${tnpu}C  cdsp=${cdsp}"
+  render
 done
-
-echo "[monitor] concluido -> $CSV"
